@@ -539,32 +539,8 @@ def _start_agent_build(sid: str, session: dict) -> None:
             finally:
                 _clear_session_context(tokens)
 
-            db = _get_db()
-            if db is not None:
-                db.create_session(key, source="tui", model=_resolve_model())
-                pending_title = (current.get("pending_title") or "").strip()
-                if pending_title:
-                    try:
-                        title_applied = db.set_session_title(key, pending_title)
-                        if title_applied:
-                            current["pending_title"] = None
-                        else:
-                            existing_row = db.get_session(key)
-                            existing_title = ((existing_row or {}).get("title") or "").strip()
-                            if existing_title == pending_title:
-                                current["pending_title"] = None
-                            else:
-                                logger.info(
-                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
-                                    sid,
-                                    pending_title,
-                                    existing_title,
-                                )
-                    except ValueError as e:
-                        current["pending_title"] = None
-                        logger.info("Dropping pending title for session %s: %s", sid, e)
-                    except Exception:
-                        logger.warning("Failed to apply pending title for session %s", sid, exc_info=True)
+            # Session DB row deferred to first run_conversation() call.
+            # pending_title applied post-first-message (see cli.exec handler).
             current["agent"] = agent
 
             try:
@@ -2995,6 +2971,17 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             if rendered:
                 payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
+
+            # Apply pending_title now that the DB row exists.
+            _pending = session.get("pending_title")
+            if _pending and status == "complete":
+                _pdb = _get_db()
+                if _pdb:
+                    try:
+                        if _pdb.set_session_title(session.get("session_key") or sid, _pending):
+                            session["pending_title"] = None
+                    except Exception:
+                        pass  # Best effort — auto-title will handle it below
 
             if (
                 status == "complete"
